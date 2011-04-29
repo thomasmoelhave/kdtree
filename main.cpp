@@ -1,77 +1,9 @@
-#include "kdtree.h"
 #include <iostream>
 #include <fstream>
-#include <sstream>
 #include <cstdlib>
-#include <boost/foreach.hpp>
-#include <boost/tokenizer.hpp>
-
-const int mindim=2;
-const int maxdim=4;
-const int D = maxdim-mindim+1;
-
-class CDIStrategy;
-typedef kdtree::node<D,int, CDIStrategy> node;
-typedef node::point_type point;
-typedef node::box_type box;
-typedef box::interval_type interval;
-
-
-
-class CDIStrategy {
-public:
-	CDIStrategy(size_t max_size) : _max_size(max_size) { }
-	///O(nlog n) median finding algorithm, can be trivially replaced
-	///with one of the standard O(N) (approximate, randomized) median
-	///finding algorithms,
-	node::point_type compute_median(std::vector<node::point_type>& v, int d) const
-	{
-		std::sort(v.begin(),v.end(), node::point_type::comparator(d));
-		return v[v.size()/2];
-	}
-
-	size_t max_size() const { return _max_size; }
-
-private:
-
-	const size_t _max_size;
-};
-
-void read_csv(const std::string& filename, std::vector<point>& v) {
-	std::ifstream f;
-	f.open(filename.c_str());
-
-	std::string line;
-
-	//skip header line;
-	std::getline(f,line);
-
-	while (std::getline(f,line)) {
-
-		boost::char_separator<char> sep(", \r");
-		boost::tokenizer<boost::char_separator<char> > tokens(line, sep);
-
-		int idx=0;
-		point p;
-
-
-		BOOST_FOREACH(std::string t, tokens)
-		{
-			for (size_t i = 0; i < t.length(); ++i) { if (t[i]=='"') t[i]=' '; }
-			std::stringstream s(t);
-			float f;
-			s >> f;
-			assert(s);
-			if (idx>=mindim) {
-				p(idx-mindim)=f;
-			} else if (idx >= maxdim)  {
-				continue;
-			}
-			++idx;
-		}
-		v.push_back(p);
-	}
-}
+#include "config.h"
+#include "csv.h"
+#include <boost/program_options.hpp>
 
 void random_data(std::vector<point>& v, size_t size) {
 	for (size_t i = 0; i < size; ++i) {
@@ -84,19 +16,81 @@ void random_data(std::vector<point>& v, size_t size) {
 }
 
 int main(int argc, char** argv) {
+	int min_year=std::numeric_limits<int>::max();
+	int max_year=std::numeric_limits<int>::min();
+	size_t min_size = 20;
 
-	std::vector<point> points;
+	namespace po = boost::program_options;
 
-	read_csv(argv[1],points);
-	//random_data(points,200);
+	po::positional_options_description p;
+	p.add("input-file", 1);
+	p.add("output-file", 1);
 
-	CDIStrategy strategy(200);
+	// Declare the supported options.
+	po::options_description desc("Allowed options");
+	desc.add_options()
+	    ("help", "produce help message")
+	    ("max-year", po::value<int>(&max_year), "Years higher than this are ignored.")
+	    ("min-year", po::value<int>(&min_year), "Years lower than this are ignored.")
+	    ("min-size", po::value<size_t>(&min_size)->default_value(min_size), "Do not create boxes with fewer than this number of sites.")
+	    ("input-file", po::value<std::string>(), "Input csv file.")
+	    ("output-file", po::value<std::string>(), "Output csv file.")
+	;
+
+	po::variables_map vm;
+	//po::store(po::parse_command_line(argc, argv, desc), vm);
+	po::store(po::command_line_parser(argc, argv).
+			options(desc).positional(p).run(), vm);
+	po::notify(vm);    
+
+	if (vm.count("help")) {
+		std::cout << desc << "\n";
+	    return 1;
+	}
+
+	if (!vm.count("input-file")) {
+		std::cout << "No input file specified.\n";
+		std::cout << desc << "\n";
+		return 1;
+	}
+	if (!vm.count("output-file")) {
+		std::cout << "No output file specified.\n";
+		std::cout << desc << "\n";
+		return 1;
+	}
+
+
+	std::string input_file=vm["input-file"].as<std::string>();
+	std::string output_file=vm["output-file"].as<std::string>();
+
+
+	std::vector<node::point_type> points;
+	
+	try {
+		read_csv(input_file,points, min_year, max_year);
+	} catch(std::exception e) {
+		std::cerr << "Error loading file: " << input_file << ":" << e.what() << "\n";
+		return 1;
+	}
+
+	Traits traits(min_size,min_year,max_year);
 
 	node n;
 
-	std::cout << "Building " << D << "D-tree from " << points.size() << " points." << std::endl;
+	std::cout << "Building " << D << "D-tree from " << points.size() << " points from years " << min_year << "-" << max_year << "." << std::endl;
 
-	n.build(points,strategy);
+	n.build(points,traits);
 
-	std::cout << n << "\n";
+	std::vector<std::pair<size_t,point> > leaf_points;
+	n.leaf_points(leaf_points);	
+
+	try {
+		write_csv(output_file,leaf_points);
+		std::ofstream nodefile((output_file+".node").c_str());
+		nodefile << n << "\n";
+	} catch(std::exception e) {
+		std::cerr << "Error loading file: " << output_file << ":" << e.what() << "\n";
+		return 1;
+	}
+
 }
